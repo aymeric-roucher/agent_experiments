@@ -231,6 +231,63 @@ async def answer_questions(
     return results
 
 
+def answer_questions_sync(
+    dataset: Dataset,
+    agent_executor: AgentExecutor,
+    agent_name: str,
+    output_folder: str = "output",
+    agent_call_function: Callable = call_langchain_agent,
+    key_for_answer: str = "answer",
+) -> List[Dict[str, Any]]:
+    """
+    Evaluates the agent on a given dataset.
+
+    Args:
+        dataset (Dataset): The dataset to test the agent on.
+        agent_executor (AgentExecutor): The agent executor object used to run the agent.
+        agent_name (str): The name of the agent model.
+
+    Returns:
+        List[Dict[str, Any]]: A list of dictionaries containing the evaluation results for each example in the dataset.
+        Each dictionary includes the agent model ID, evaluator model ID, question, ground truth answer, prediction,
+        intermediate steps, evaluation score, evaluation feedback, tool call parsing error flag, iteration limit
+        exceeded flag, agent error (if any), and example metadata (task).
+    """
+    try:
+        with open(f"{output_folder}/{agent_name}.json", "r") as f:
+            results = json.load(f)
+    except FileNotFoundError:
+        results = []
+
+    results_df = pd.DataFrame(results)
+
+    for i, example in tqdm(enumerate(dataset), total=len(dataset)):
+        if len(results_df) > 0:
+            if example["question"] in results_df["question"].unique():
+                continue
+
+        # run agent
+        result = run_agent(
+            question=example["question"],
+            agent_executor=agent_executor,
+            agent_name=agent_name,
+            agent_call_function=agent_call_function,
+        )
+
+        # add in example metadata
+        result.update(
+            {
+                "gt_answer": example[key_for_answer],
+                "task": example["task"],
+            }
+        )
+        results.append(result)
+
+        with open(f"{output_folder}/{agent_name}.json", "w") as f:
+            json.dump(results, f)
+    return results
+
+
 async def run_full_tests(
     dataset: Dataset,
     agents: Dict[str, AgentExecutor],
