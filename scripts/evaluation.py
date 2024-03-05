@@ -12,6 +12,9 @@ from threading import Thread
 from queue import Queue
 import datasets
 
+import numpy as np
+import re
+
 _SENTINEL_KILL_CONSUMERS = object()
 
 
@@ -100,11 +103,11 @@ async def evaluate_answers(
             previous_evaluations = previous_evaluations.loc[previous_evaluations[f"eval_score_{evaluator_name}"].notna()]
             print('Previous evaluations:')
             
-            examples = [example for example in examples if not len(previous_evaluations.loc[
+            examples_to_do = [example for example in examples if not len(previous_evaluations.loc[
                 (previous_evaluations["question"] == example["question"]) & (previous_evaluations["agent_name"] == example["agent_name"])
             ]) > 0]
 
-    print(f"Launching evaluation for {len(examples)} examples...")
+    print(f"Launching evaluation for {len(examples_to_do)} examples...")
 
     writer_queue = Queue()
 
@@ -137,13 +140,13 @@ async def evaluate_answers(
                 eval_split_string,
                 writer_queue,
             )
-            for example in examples
+            for example in examples_to_do
         ]
 
         evaluation_results = [await f for f in tqdm.tqdm(asyncio.as_completed(tasks), total=len(tasks))]
         writer_queue.put(_SENTINEL_KILL_CONSUMERS)
 
-    return evaluation_results
+    return evaluation_results + previous_evaluations.to_dict(orient="records")
 
 
 def extract_numbers(string):
@@ -183,3 +186,63 @@ def load_math_datasets():
     eval_dataset = math_dataset.select(range(30))
     fewshot_dataset = math_dataset.select(range(10))
     return eval_dataset, fewshot_dataset
+
+
+def load_benchmark():
+    def split_answer(row):
+        splitted = row["answer"].split("####")
+        row["true_reasoning"] = splitted[0]
+        row["true_answer"] = float(splitted[1].strip())
+        return row
+
+    math_dataset = (
+        datasets.load_dataset("gsm8k", "main")["train"].shuffle(seed=42).select(range(40))
+    )
+    math_df = pd.DataFrame(math_dataset)
+    math_df = math_df.apply(split_answer, axis=1)
+    math_df = math_df.drop(columns=["answer"])
+    math_df['task'] = 'gsm8k'
+
+    dataset = datasets.load_dataset("m-ric/agents_small_benchmark")['train']
+    dataset = dataset.rename_column("answer", "true_answer")
+    hotpotqa = dataset.filter(lambda row: 'Hotpot' in row["task"])
+    hotpotqa = hotpotqa.select(range(30))
+    hotpotqa_df = pd.DataFrame(hotpotqa)
+    hotpotqa_df['task'] = 'HotpotQA'
+    gaia = dataset.filter(lambda row: 'GAIA' in row["task"])
+    gaia_df = pd.DataFrame(gaia)
+    gaia_df['task'] = 'GAIA'
+    
+    return pd.concat([math_df, hotpotqa_df, gaia_df])
+
+
+def extract_numbers(output):
+    if isinstance(output, float) or isinstance(output, int):
+        return [output]
+    try:
+        found_strings = [el.strip() for el in re.findall(r"(?:[,\d]+.?\d*)", output)]
+
+        found_strings = [
+            "".join(ch for ch in el if (ch.isalnum() or ch == "."))
+            for el in found_strings
+            if el[0].isdigit() or el[0] == "."
+        ]
+        found_strings = [float(el) for el in found_strings if len(el) > 0]
+
+        return found_strings
+
+    except Exception as e:
+        print("Error when extracting string:", e)
+        return []
+
+
+def score_any_match(prediction, true_answer):
+    """Scores if any number extracted from the prediction matches the true answer"""
+    extracted_numbers = extract_numbers(prediction)
+    found_match = any(
+        [
+            np.isclose(extracted_number, true_answer, rtol=0.1)
+            for extracted_number in extracted_numbers
+        ]
+    )
+    return found_match

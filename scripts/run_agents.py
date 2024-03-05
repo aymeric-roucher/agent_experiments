@@ -46,7 +46,7 @@ async def arun_agent(
             True
             if any(
                 [
-                    "Could not parse LLM output" in step[0].log
+                    "Could not parse LLM output" in step
                     for step in response["intermediate_steps"]
                 ]
             )
@@ -71,17 +71,18 @@ async def arun_agent(
 
     end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     # collect results
-    if response["intermediate_steps"] is not None:
-        intermediate_steps = [
-            {
-                "tool": response[0].tool,
-                "tool_input": response[0].tool_input,
-                "tool_output": response[1],
-            }
-            for response in response["intermediate_steps"]
-        ]
-    else:
-        intermediate_steps = None
+    # if response["intermediate_steps"] is not None:
+    #     intermediate_steps = [
+    #         {
+    #             "tool": response[0].tool,
+    #             "tool_input": response[0].tool_input,
+    #             "tool_output": response[1],
+    #         }
+    #         for response in response["intermediate_steps"]
+    #     ]
+    # else:
+    #     intermediate_steps = None
+    intermediate_steps = response["intermediate_steps"]
     return {
         "agent_name": agent_name,
         "question": question,
@@ -291,6 +292,9 @@ def answer_questions_sync(
 async def run_full_tests(
     dataset: Dataset,
     agents: Dict[str, AgentExecutor],
+    agent_call_function: Callable = acall_langchain_agent,
+    output_folder: str = "output",
+    key_for_answer: str = "answer",
 ) -> pd.DataFrame:
     """
     Run a full evaluation on the given dataset using multiple agent models.
@@ -309,7 +313,9 @@ async def run_full_tests(
             dataset=dataset,
             agent_executor=agent_executor,
             agent_name=agent_name,
-            agent_call_function=acall_langchain_agent,
+            agent_call_function=agent_call_function,
+            output_folder=output_folder,
+            key_for_answer=key_for_answer,
         )
         for agent_name, agent_executor in agents.items()
     ]
