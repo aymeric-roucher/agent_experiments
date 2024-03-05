@@ -146,7 +146,7 @@ async def evaluate_answers(
     return evaluation_results
 
 
-def extract_number(string):
+def extract_numbers(string):
     try:
         found_strings = [el.strip() for el in re.findall(r"(?:[,\d]+.?\d*)", string)]
 
@@ -155,10 +155,9 @@ def extract_number(string):
             for el in found_strings
             if el[0].isdigit() or el[0] == "."
         ]
-        found_strings = [el for el in found_strings if len(el) > 0]
+        found_strings = [float(el) for el in found_strings if len(el) > 0]
 
-        found_string = found_strings[-1]
-        return float(found_string)
+        return found_strings
     except Exception as e:
         print("Error when extracting string:", e)
         return 0
