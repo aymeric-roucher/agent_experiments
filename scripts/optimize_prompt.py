@@ -1,16 +1,15 @@
 from typing import Callable, Dict
 import pandas as pd
 from tqdm.auto import tqdm
-from operator import itemgetter
-from scripts.evaluation import extract_number
 
-def get_answers(prompt: str, agent, questions: pd.Series):
+
+def get_answers(prompt: str, llm_client, questions: pd.Series) -> pd.Series:
     try:
         prompts = questions.apply(lambda x: prompt.replace('{question}', x))
     except Exception as e:
         print(e)
         return e
-    return prompts.apply(lambda x: agent.invoke(x).content)
+    return prompts.apply(lambda x: llm_client.text_generation(prompt=x, max_new_tokens=500))
 
     
 def get_better_prompt(best_example: Dict, validation_set_with_answers: pd.DataFrame, teacher_agent, examples_other_less_good_prompts = None) -> str:
@@ -27,7 +26,7 @@ def get_better_prompt(best_example: Dict, validation_set_with_answers: pd.DataFr
 
     Here are the examples of the validation set with the answers for this best prompt, to help you come up with an even better prompt:
     """
-    for i, example in validation_set_with_answers.iterrows():
+    for i, example in validation_set_with_answers.iloc[:7].iterrows():
         prompt += f'--- Example {i}:\n'
         for feature, value in example.to_dict().items():
             prompt += f"Feature: {feature.capitalize()}: has value '{value}'.\n"
@@ -47,18 +46,13 @@ def get_better_prompt(best_example: Dict, validation_set_with_answers: pd.DataFr
     return teacher_agent.invoke(prompt).content
 
 
-def optimize_prompt(logs, prompt, validation_set, student_agent, scoring_function: Callable, teacher_agent = None, n_iter = 6):
-    if not teacher_agent:
-        teacher_agent = student_agent
-
+def optimize_prompt(logs, prompt, validation_set, llm_client, scoring_function: Callable, teacher_agent = None, n_iter = 6):
     for _ in tqdm(range(n_iter)):
         # Score current prompt
         validation_set_with_answers = validation_set.copy()
 
-        validation_set_with_answers['prediction'] = get_answers(prompt, student_agent, validation_set['question'])
-        validation_set_with_answers['extracted_prediction'] = validation_set_with_answers['prediction'].apply(extract_number)
-        validation_set_with_answers['prediction_is_correct'] = scoring_function(validation_set_with_answers['extracted_prediction'], validation_set_with_answers['true_answer'])
-        display(validation_set_with_answers[['prediction', 'extracted_prediction', 'prediction_is_correct']])
+        validation_set_with_answers['prediction'] = get_answers(prompt, llm_client, validation_set['question'])
+        validation_set_with_answers['prediction_is_correct'] = scoring_function(validation_set_with_answers['prediction'], validation_set_with_answers['true_answer'])
         print("Current prompt:", prompt)
         print('Score:', validation_set_with_answers['prediction_is_correct'].mean())
         logs.append({'prompt': prompt, 'score': validation_set_with_answers['prediction_is_correct'].mean(), 'answers': validation_set_with_answers})

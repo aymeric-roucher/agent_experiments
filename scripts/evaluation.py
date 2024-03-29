@@ -5,7 +5,7 @@ from langchain.llms import HuggingFaceEndpoint
 from langchain.prompts.chat import ChatPromptTemplate
 import pandas as pd
 import asyncio
-from typing import Optional, List
+from typing import Optional, List, Union
 import tqdm.asyncio
 import numpy as np
 from threading import Thread
@@ -99,16 +99,20 @@ async def evaluate_answers(
     """
     if output_file_path and os.path.isfile(output_file_path):
         previous_evaluations = pd.read_json(output_file_path, lines=True)
+        print('Previous evaluations:')
+
+        print(previous_evaluations)
         if f"eval_score_{evaluator_name}" in previous_evaluations.columns:
             previous_evaluations = previous_evaluations.loc[previous_evaluations[f"eval_score_{evaluator_name}"].notna()]
-            print('Previous evaluations:')
             
             examples_to_do = [example for example in examples if not len(previous_evaluations.loc[
                 (previous_evaluations["question"] == example["question"]) & (previous_evaluations["agent_name"] == example["agent_name"])
             ]) > 0]
 
-    print(f"Launching evaluation for {len(examples_to_do)} examples...")
+        else:
+            examples_to_do = examples
 
+    print(f"Launching evaluation for {len(examples_to_do)} examples...")
     writer_queue = Queue()
 
     with open(output_file_path, "a") as output_file:
@@ -169,23 +173,22 @@ def extract_numbers(string):
 def split_answer(row):
     splitted = row["answer"].split("####")
     row["true_reasoning"] = splitted[0]
-    row["true_answer"] = float(splitted[1].strip())
+    str_answer = splitted[1].strip().replace(",", "") # remove thousand separators from GSM8K
+    row["true_answer"] = float(str_answer)
     return row
 
 
-def load_math_datasets():
+def load_math_datasets(n_eval_samples = 30):
     math_dataset = (
-        datasets.load_dataset("gsm8k", "main")["train"].shuffle(seed=42).select(range(100))
+        datasets.load_dataset("gsm8k", "main")["train"].shuffle(seed=496).select(range(100))
     )
     math_dataset = pd.DataFrame(math_dataset)
 
     math_dataset = math_dataset.apply(split_answer, axis=1)
-    math_dataset = math_dataset.drop(columns=["answer"])
+    math_dataset = math_dataset.drop(columns=["answer"]).iloc[:100]
     math_dataset = datasets.Dataset.from_pandas(math_dataset)
 
-    eval_dataset = math_dataset.select(range(30))
-    fewshot_dataset = math_dataset.select(range(10))
-    return eval_dataset, fewshot_dataset
+    return math_dataset
 
 
 def load_benchmark():
@@ -236,13 +239,27 @@ def extract_numbers(output):
         return []
 
 
-def score_any_match(prediction, true_answer):
+def score_any_match(prediction: str, true_answer: Union[str, int, float]) -> bool:
     """Scores if any number extracted from the prediction matches the true answer"""
     extracted_numbers = extract_numbers(prediction)
     found_match = any(
         [
-            np.isclose(extracted_number, true_answer, rtol=0.1)
+            np.isclose(extracted_number, float(true_answer), atol=0.1, rtol=0.05)
             for extracted_number in extracted_numbers
         ]
     )
     return found_match
+
+def score_last_match(prediction: str, true_answer: Union[str, int, float]) -> bool:
+    """Scores if any number extracted from the prediction matches the true answer"""
+    extracted_numbers = extract_numbers(prediction)
+    if len(extracted_numbers) == 0:
+        return False
+    return np.isclose(extracted_numbers[-1], float(true_answer), atol=0.1, rtol=0.05)
+
+
+def score_any_match_series(predictions: pd.Series, true_answers: pd.Series) -> List:
+    return [score_any_match(predictions.values[i], true_answers.values[i]) for i in range(len(predictions.values))]
+
+def score_last_match_series(predictions: pd.Series, true_answers: pd.Series) -> List:
+    return [score_last_match(predictions.values[i], true_answers.values[i]) for i in range(len(predictions.values))]
