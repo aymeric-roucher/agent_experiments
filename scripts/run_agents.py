@@ -8,6 +8,28 @@ from datasets import Dataset
 
 from langchain.agents import AgentExecutor
 from langchain.tools.base import ToolException
+from huggingface_hub import InferenceClient
+from transformers.agents.default_tools import Tool
+from transformers.agents.agents import AgentError
+
+
+class VisualQATool(Tool):
+    name = "visualizer"
+    description = "A tool that can answer questions about attached documents."
+
+    inputs = {
+        "question": {"description": "the question to answer", "type": str},
+        "image": {"description": "the image to answer the question on", "type": str},
+    }
+    client = InferenceClient(
+        model="impira/layoutlm-document-qa",
+    )
+    def __init__(self):
+        super().__init__()
+
+    def __call__(self, question: str, image: str) -> str:
+        output = self.client.visual_question_answering(image=image, question=question)[0]
+        return str({"answer": output["answer"], "score": round(output["score"], 3)})
 
 
 def acall_langchain_agent(agent: AgentExecutor, question: str) -> str:
@@ -21,6 +43,7 @@ async def arun_agent(
     agent_executor: AgentExecutor,
     agent_name: str,
     agent_call_function: Callable,
+    **kwargs
 ) -> dict:
     """
     Runs the execution process for a given question and ground truth answer.
@@ -38,7 +61,7 @@ async def arun_agent(
     start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         # run executor agent
-        response = await agent_call_function(agent_executor, question)
+        response = await agent_call_function(agent_executor, question, **kwargs)
 
         # check for parsing errors which indicate the LLM failed to follow the ReACT format
         # this could be due to an issue with the tool calling format or ReACT formatting (i.e. Thought, Action, Observation, etc.)
@@ -94,7 +117,6 @@ async def arun_agent(
         "start_time": start_time,
         "end_time": end_time,
     }
-
 
 
 def run_agent(
@@ -175,20 +197,27 @@ def run_agent(
     }
 
 
+def serialize_agent_error(obj):
+    if isinstance(obj, AgentError):
+        return {"error_type": obj.__class__.__name__, "message": obj.message}
+    else:
+        return str(obj)
+
 async def answer_questions(
     dataset: Dataset,
-    agent_executor: AgentExecutor,
+    agent: AgentExecutor,
     agent_name: str,
     output_folder: str = "output",
     agent_call_function: Callable = call_langchain_agent,
     key_for_answer: str = "answer",
+    add_optional_visualizer_tool: bool = False
 ) -> List[Dict[str, Any]]:
     """
     Evaluates the agent on a given dataset.
 
     Args:
         dataset (Dataset): The dataset to test the agent on.
-        agent_executor (AgentExecutor): The agent executor object used to run the agent.
+        agent: The agent.
         agent_name (str): The name of the agent model.
 
     Returns:
@@ -200,22 +229,36 @@ async def answer_questions(
     try:
         with open(f"{output_folder}/{agent_name}.json", "r") as f:
             results = json.load(f)
+        print(f"Found {len(results)} previous results!")
     except FileNotFoundError:
+        print("Found no previous results! 🤔 Starting new.")
         results = []
 
     results_df = pd.DataFrame(results)
+
 
     for i, example in tqdm(enumerate(dataset), total=len(dataset)):
         if len(results_df) > 0:
             if example["question"] in results_df["question"].unique():
                 continue
+        additional_kwargs = {}
+        if add_optional_visualizer_tool:
+            if example['file_name']:
+                if example['file_name'].split('.')[-1] in ['pdf', 'xlsx', 'txt']:
+                    image_path = example['file_name'].split('.')[0] + '.png'
+                else:
+                    image_path = example['file_name']
+                print("Here's the image path:")
+                print(image_path)
+                additional_kwargs['image_path'] = image_path
 
         # run agent
         result = await arun_agent(
             question=example["question"],
-            agent_executor=agent_executor,
+            agent_executor=agent,
             agent_name=agent_name,
             agent_call_function=agent_call_function,
+            **additional_kwargs
         )
 
         # add in example metadata
@@ -228,7 +271,8 @@ async def answer_questions(
         results.append(result)
 
         with open(f"{output_folder}/{agent_name}.json", "w") as f:
-            json.dump(results, f)
+            print(result)
+            json.dump(results, f, default=serialize_agent_error)
     return results
 
 
@@ -311,7 +355,7 @@ async def run_full_tests(
     tasks = [
         answer_questions(
             dataset=dataset,
-            agent_executor=agent_executor,
+            agent=agent_executor,
             agent_name=agent_name,
             agent_call_function=agent_call_function,
             output_folder=output_folder,

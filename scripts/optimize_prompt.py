@@ -9,7 +9,7 @@ def get_answers(prompt: str, llm_client, questions: pd.Series) -> pd.Series:
     except Exception as e:
         print(e)
         return e
-    return prompts.apply(lambda x: llm_client.text_generation(prompt=x, max_new_tokens=500))
+    return prompts.apply(lambda x: llm_client.text_generation(prompt=x, max_new_tokens=1000))
 
     
 def get_better_prompt(best_example: Dict, validation_set_with_answers: pd.DataFrame, teacher_agent, examples_other_less_good_prompts = None) -> str:

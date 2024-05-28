@@ -14,6 +14,8 @@ import datasets
 
 import numpy as np
 import re
+from Levenshtein import distance as levenshtein_distance
+
 
 _SENTINEL_KILL_CONSUMERS = object()
 
@@ -78,7 +80,7 @@ async def evaluate_single_example(
 
 
 async def evaluate_answers(
-    examples: List,
+    examples,
     evaluator,
     evaluator_name: str,
     eval_prompt_template: ChatPromptTemplate,
@@ -97,6 +99,9 @@ async def evaluate_answers(
     Returns:
         pd.DataFrame: The evaluation results as a pandas DataFrame.
     """
+    examples_to_do = examples
+    previous_evaluations = pd.DataFrame()
+    
     if output_file_path and os.path.isfile(output_file_path):
         previous_evaluations = pd.read_json(output_file_path, lines=True)
         print('Previous evaluations:')
@@ -108,9 +113,6 @@ async def evaluate_answers(
             examples_to_do = [example for example in examples if not len(previous_evaluations.loc[
                 (previous_evaluations["question"] == example["question"]) & (previous_evaluations["agent_name"] == example["agent_name"])
             ]) > 0]
-
-        else:
-            examples_to_do = examples
 
     print(f"Launching evaluation for {len(examples_to_do)} examples...")
     writer_queue = Queue()
@@ -263,3 +265,50 @@ def score_any_match_series(predictions: pd.Series, true_answers: pd.Series) -> L
 
 def score_last_match_series(predictions: pd.Series, true_answers: pd.Series) -> List:
     return [score_last_match(predictions.values[i], true_answers.values[i]) for i in range(len(predictions.values))]
+
+
+def score_levenshtein(prediction: str, true_answer: str):
+    if len(prediction) <= len(true_answer):
+        return 1 - (
+            levenshtein_distance(prediction.lower(), true_answer.lower())
+            / len(true_answer)
+        )
+    else:  # find substring with highest score
+        base_score = max(
+            [
+                1
+                - (
+                    levenshtein_distance(
+                        prediction[offset : offset + len(true_answer)].lower(),
+                        true_answer.lower(),
+                    )
+                    / len(true_answer)
+                )
+                for offset in range(len(prediction) - len(true_answer))
+            ]
+        )
+        # downgrade score if length is too long
+        return base_score
+
+
+def score_naive_match(prediction: str, true_answer: str):
+    if len(prediction) <= len(true_answer):
+        return prediction.lower() == true_answer.lower()
+    else:  # find substring with highest score
+        return any(
+            [
+                prediction[offset : offset + len(true_answer)].lower()
+                == true_answer.lower()
+                for offset in range(len(prediction) - len(true_answer))
+            ]
+        )
+    
+def is_number(am_i_a_number):
+    return am_i_a_number.strip().lstrip('-').replace('.', '', 1).replace(',', '').isdigit()
+
+
+def score_outputs(prediction: str, true_answer: str):
+    if is_number(true_answer):
+        return score_any_match(prediction, true_answer)
+    else:
+        return score_levenshtein(prediction, true_answer)
